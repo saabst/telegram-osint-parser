@@ -1,0 +1,45 @@
+# ===== Конфиденциальные данные (КРИТИЧНО) =====
+config.json
+*.session
+*.session-journal
+*.session-wal
+
+# ===== Список источников (раскомментируй, если список приватный) =====
+# sources.json
+
+# ===== Данные парсинга (генерируются автоматически) =====
+events/
+events_index.json
+viewer.html
+events_export.csv
+events_export.xlsx
+
+# ===== Виртуальное окружение =====
+venv/
+env/
+.venv/
+ENV/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ===== IDE и редакторы =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,10 @@
+telethon==1.36.0
+customtkinter==5.2.1
+dateparser==1.2.0
+rich==13.7.0
+pandas==2.2.3
+openpyxl==3.1.2
+xlsxwriter==3.1.9
+plyer==2.1.0
+tkcalendar==1.6.1
+packaging

@@ -1,0 +1,32 @@
+{
+  "sources": [
+    {
+      "username": "voenkor_xyz",
+      "title": "Военкор XYZ",
+      "enabled": true,
+      "groups": ["военкоры", "проверенные"],
+      "note": "Основной по прилётам"
+    },
+    {
+      "username": "official_mil",
+      "title": "Официальное МО",
+      "enabled": true,
+      "groups": ["официальные"],
+      "note": ""
+    },
+    {
+      "username": "region_news",
+      "title": "Региональные новости",
+      "enabled": false,
+      "groups": ["регион"],
+      "note": "Много шума, мало дела"
+    },
+    {
+      "username": "osint_group",
+      "title": "OSINT-группа",
+      "enabled": true,
+      "groups": ["osint", "проверенные"],
+      "note": ""
+    }
+  ]
+}
