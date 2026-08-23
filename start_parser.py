@@ -13,19 +13,22 @@ from tkinter import messagebox
 
 import customtkinter as ctk
 import dateparser
-from telethon import TelegramClient
 
 # Импортируем функции из parser.py
 from parser import (
     load_sources, save_index, load_index, is_duplicate, add_to_index,
     extract_coordinates, extract_entities, classify_event, save_event,
-    load_config, save_config,
+    load_config, save_config, run_web_parsing,
     TRIGGER_WORDS
 )
 
 # Настройки темы
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+# Режимы парсинга
+MODE_LABELS = {"api": "Telegram API", "web": "Веб (t.me/s)"}
+MODE_VALUES = {v: k for k, v in MODE_LABELS.items()}
 
 
 class ParserGUI(ctk.CTk):
@@ -79,13 +82,15 @@ class ParserGUI(ctk.CTk):
         
         ctk.CTkLabel(settings_frame, text="⚙️ Настройки", font=("", 14, "bold")).pack(anchor="w", pady=(0, 5))
         
-        api_status = "✓ Настроено" if all([self.config.get("api_id"), self.config.get("api_hash"), self.config.get("phone")]) else "✗ Не настроено"
-        api_color = "green" if api_status.startswith("✓") else "red"
+        self.mode_status_label = ctk.CTkLabel(settings_frame, text="", text_color="green")
+        self.mode_status_label.pack(anchor="w")
         
-        self.api_status_label = ctk.CTkLabel(settings_frame, text=f"API: {api_status}", text_color=api_color)
+        self.api_status_label = ctk.CTkLabel(settings_frame, text="")
         self.api_status_label.pack(anchor="w")
+        self.update_settings_labels()
         
-        ctk.CTkButton(settings_frame, text="Настроить API", width=150, command=self.open_api_settings).pack(pady=(5, 0))
+        ctk.CTkButton(settings_frame, text="Настройки парсинга", width=150,
+                      command=self.open_api_settings).pack(pady=(5, 0))
         
         # ===== СРЕДНЯЯ ПАНЕЛЬ — ИСТОЧНИКИ =====
         middle_frame = ctk.CTkFrame(main_frame)
@@ -302,64 +307,117 @@ class ParserGUI(ctk.CTk):
             source["enabled"] = False
         self.save_sources()
     
+    def update_settings_labels(self):
+        """Обновляет подписи режима и статуса API в правой панели."""
+        mode = self.config.get("mode", "api")
+        self.mode_status_label.configure(
+            text=f"Режим: {MODE_LABELS[mode]}",
+            text_color="green" if mode == "web" else "yellow")
+        
+        creds_ok = all([self.config.get("api_id"), self.config.get("api_hash"), self.config.get("phone")])
+        api_status = "✓ Настроено" if creds_ok else "✗ Не настроено"
+        api_color = "green" if creds_ok else "red"
+        if mode == "web":
+            self.api_status_label.configure(text=f"API-ключи не нужны", text_color="gray")
+        else:
+            self.api_status_label.configure(text=f"API: {api_status}", text_color=api_color)
+    
     def open_api_settings(self):
-        """Открывает диалог настроек API."""
+        """Открывает диалог настроек парсинга (режим + API credentials)."""
         dialog = ctk.CTkToplevel(self)
-        dialog.title("Настройки Telegram API")
-        dialog.geometry("500x400")
+        dialog.title("Настройки парсинга")
+        dialog.geometry("560x560")
         dialog.transient(self)
         dialog.update()
         dialog.grab_set()
         
-        ctk.CTkLabel(dialog, text="🔑 Telegram API Credentials", font=("", 16, "bold")).pack(pady=(20, 10))
+        ctk.CTkLabel(dialog, text="⚙️ Способ парсинга", font=("", 16, "bold")).pack(pady=(20, 10))
         
-        ctk.CTkLabel(dialog, text="Получить API можно на https://my.telegram.org", text_color="gray").pack(pady=(0, 20))
+        seg = ctk.CTkSegmentedButton(dialog, values=list(MODE_LABELS.values()),
+                                     font=("", 13))
+        seg.set(MODE_LABELS[self.config.get("mode", "api")])
+        seg.pack(pady=(0, 8))
+        
+        hint = ctk.CTkLabel(dialog, text="", justify="left", wraplength=480,
+                            text_color="gray")
+        hint.pack(pady=(0, 15), padx=30)
+        
+        ctk.CTkLabel(dialog, text="🔑 Telegram API Credentials (для режима «Telegram API»)",
+                     font=("", 14, "bold")).pack(pady=(0, 10))
+        
+        ctk.CTkLabel(dialog, text="Получить API можно на https://my.telegram.org", text_color="gray").pack(pady=(0, 10))
         
         ctk.CTkLabel(dialog, text="API ID (число):").pack(anchor="w", padx=30, pady=(0, 5))
-        api_id_entry = ctk.CTkEntry(dialog, width=400)
+        api_id_entry = ctk.CTkEntry(dialog, width=460)
         api_id_entry.pack(padx=30)
         if self.config.get("api_id"):
             api_id_entry.insert(0, str(self.config["api_id"]))
         
         ctk.CTkLabel(dialog, text="API Hash (строка):").pack(anchor="w", padx=30, pady=(15, 5))
-        api_hash_entry = ctk.CTkEntry(dialog, width=400, show="•")
+        api_hash_entry = ctk.CTkEntry(dialog, width=460, show="•")
         api_hash_entry.pack(padx=30)
         if self.config.get("api_hash"):
             api_hash_entry.insert(0, self.config["api_hash"])
         
         ctk.CTkLabel(dialog, text="Телефон (с кодом страны):").pack(anchor="w", padx=30, pady=(15, 5))
-        phone_entry = ctk.CTkEntry(dialog, width=400)
+        phone_entry = ctk.CTkEntry(dialog, width=460)
         phone_entry.pack(padx=30)
         if self.config.get("phone"):
             phone_entry.insert(0, self.config["phone"])
         
+        entries = (api_id_entry, api_hash_entry, phone_entry)
+        
+        def on_mode_change(label):
+            mode = MODE_VALUES[label]
+            state = "disabled" if mode == "web" else "normal"
+            for e in entries:
+                e.configure(state=state)
+            hint.configure(text=(
+                "Веб-режим: без ключей и аккаунта. Работает через публичное "
+                "превью t.me/s — только открытые каналы (@username), только текст постов."
+                if mode == "web" else
+                "Режим Telegram API: полная функциональность, нужны api_id/api_hash "
+                "с my.telegram.org и вход по коду из Telegram."
+            ))
+        
+        seg.configure(command=on_mode_change)
+        on_mode_change(seg.get())
+        
         def save():
+            mode = MODE_VALUES[seg.get()]
             api_id = api_id_entry.get().strip()
             api_hash = api_hash_entry.get().strip()
             phone = phone_entry.get().strip()
             
-            if not all([api_id, api_hash, phone]):
-                messagebox.showerror("Ошибка", "Заполните все поля")
+            if mode == "api" and not all([api_id, api_hash, phone]):
+                messagebox.showerror("Ошибка", "Для режима Telegram API заполните все поля.\n"
+                                              "Либо переключитесь на веб-режим — там ключи не нужны.",
+                                     parent=dialog)
                 return
             
-            try:
-                api_id = int(api_id)
-            except ValueError:
-                messagebox.showerror("Ошибка", "API ID должен быть числом")
-                return
+            if api_id:
+                try:
+                    api_id = int(api_id)
+                except ValueError:
+                    messagebox.showerror("Ошибка", "API ID должен быть числом", parent=dialog)
+                    return
             
             self.config = {
-                "api_id": api_id,
-                "api_hash": api_hash,
-                "phone": phone,
+                "mode": mode,
+                "api_id": api_id or None,
+                "api_hash": api_hash or None,
+                "phone": phone or None,
             }
             save_config(self.config)
             
-            self.api_status_label.configure(text="API: ✓ Настроено", text_color="green")
-            messagebox.showinfo("Успех", "Настройки сохранены!")
+            self.update_settings_labels()
+            messagebox.showinfo("Успех",
+                                f"Сохранено! Режим: {MODE_LABELS[mode]}" +
+                                ("\nКлючи не нужны." if mode == "web" else ""),
+                                parent=dialog)
             dialog.destroy()
         
-        ctk.CTkButton(dialog, text="Сохранить", command=save, width=200).pack(pady=30)
+        ctk.CTkButton(dialog, text="Сохранить", command=save, width=200).pack(pady=25)
     
     def update_viewer(self):
         """Собирает и открывает HTML viewer."""
@@ -454,9 +512,12 @@ class ParserGUI(ctk.CTk):
             messagebox.showwarning("Внимание", "Парсинг уже запущен")
             return
         
-        # Проверяем API credentials
-        if not all([self.config.get("api_id"), self.config.get("api_hash"), self.config.get("phone")]):
-            messagebox.showerror("Ошибка", "Сначала настройте API credentials")
+        mode = self.config.get("mode", "api")
+        
+        # В веб-режиме ключи не нужны
+        if mode == "api" and not all([self.config.get("api_id"), self.config.get("api_hash"), self.config.get("phone")]):
+            messagebox.showerror("Ошибка", "Сначала настройте API credentials\n"
+                                          "(или переключитесь на веб-режим в настройках — там ключи не нужны)")
             return
         
         selected = [s for _, var, s in self.source_checkboxes if var.get()]
@@ -476,8 +537,9 @@ class ParserGUI(ctk.CTk):
         self.progress.set(0)
         self.log_text.delete("1.0", "end")
         
+        target = self.run_web_parser if mode == "web" else self.run_parser
         thread = threading.Thread(
-            target=self.run_parser,
+            target=target,
             args=(selected, date_from, date_to, self.force_var.get()),
             daemon=True
         )
@@ -485,6 +547,8 @@ class ParserGUI(ctk.CTk):
     
     def run_parser(self, sources: list[dict], date_from, date_to, force: bool):
         try:
+            from telethon import TelegramClient   # ленивый импорт: в веб-режиме не нужен
+            
             api_id, api_hash, phone = self.config["api_id"], self.config["api_hash"], self.config["phone"]
             
             self.log(f"🚀 Запуск парсера")
@@ -583,7 +647,47 @@ class ParserGUI(ctk.CTk):
             self.is_running = False
             self.start_btn.configure(state="normal", text="🚀 Запустить парсинг")
 
-
+    def run_web_parser(self, sources: list[dict], date_from, date_to, force: bool):
+        """Воркер веб-режима: парсинг через t.me/s без API-ключей."""
+        try:
+            self.log(f"🚀 Запуск парсера (веб-режим t.me/s)")
+            self.log(f"📡 Источников: {len(sources)}")
+            if date_from:
+                self.log(f"📅 От: {date_from:%Y-%m-%d %H:%M}")
+            if date_to:
+                self.log(f"📅 До: {date_to:%Y-%m-%d %H:%M}")
+            if force:
+                self.log("⚠️  Режим: игнорировать дедупликацию")
+            self.log("")
+            
+            index = load_index()
+            self.log(f"📋 В индексе: {len(index)} постов\n")
+            
+            def progress_cb(i, total):
+                self.progress.set((i + 1) / total)
+            
+            total_new, total_dup = run_web_parsing(
+                sources, date_from, date_to, 500, force, index,
+                log=self.log, progress=progress_cb)
+            
+            save_index(index)
+            
+            self.log(f"\n🏁 Готово! Новых: {total_new}  Дубликатов: {total_dup}")
+            self.status_label.configure(text="Готово")
+            self.progress.set(1.0)
+            
+            messagebox.showinfo("Готово", f"Парсинг завершён!\nНовых: {total_new}\nДубликатов: {total_dup}")
+        
+        except Exception as e:
+            self.log(f"\n❌ Ошибка: {e}")
+            self.status_label.configure(text="Ошибка")
+            messagebox.showerror("Ошибка", str(e))
+        
+        finally:
+            self.is_running = False
+            self.start_btn.configure(state="normal", text="🚀 Запустить парсинг")
+    
+    
 if __name__ == "__main__":
     app = ParserGUI()
     app.mainloop()

@@ -8,8 +8,9 @@ from datetime import datetime
 from pathlib import Path
 
 import asyncio
+import time
+
 import dateparser
-from telethon import TelegramClient
 from rich.console import Console
 from rich.table import Table
 
@@ -175,6 +176,11 @@ def save_event(channel_username: str, channel_title: str, message, entities: dic
     folder = os.path.join(OUTPUT_DIR, category)
     os.makedirs(folder, exist_ok=True)
     filename = f"{message.date.strftime('%Y-%m-%d_%H-%M')}_msg{message.id}.json"
+    # Для публичных каналов правильная ссылка — t.me/<username>/<id>
+    if channel_username:
+        link = f"https://t.me/{channel_username}/{message.id}"
+    else:
+        link = f"https://t.me/c/{getattr(message, 'chat_id', '')}/{message.id}"
     data = {
         "id": message.id,
         "channel_username": channel_username,
@@ -182,7 +188,7 @@ def save_event(channel_username: str, channel_title: str, message, entities: dic
         "date": message.date.isoformat(),
         "category": category,
         "full_text": message.text or "",
-        "link": f"https://t.me/c/{message.chat_id}/{message.id}",
+        "link": link,
         "geo": {"coordinates": coords, "location_name": entities["location"],
                 "country": entities["country"]},
         "military": {"missile_type": entities["missile_type"]},
@@ -204,7 +210,67 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--group", help="Только из групп: военкоры,официальные")
     p.add_argument("--limit", type=int, default=500, help="Макс. постов на канал")
     p.add_argument("--force", action="store_true", help="Игнорировать дедупликацию")
+    p.add_argument("--mode", choices=["api", "web"], default="api",
+                   help="Способ парсинга: api — Telethon (нужны ключи), web — веб-превью t.me/s (без ключей)")
     return p
+
+
+# ---------- Веб-режим (t.me/s, без API-ключей) ----------
+def run_web_parsing(sources: list[dict], date_from, date_to, limit: int,
+                    force: bool, index: set,
+                    log=None, progress=None) -> tuple[int, int]:
+    """Парсит каналы через веб-превью t.me/s. Возвращает (новых, дубликатов).
+
+    Использует ту же обработку, что и API-режим: триггеры, извлечение
+    сущностей, категории, дедупликацию и формат сохранения.
+    """
+    from web_fetch import ChannelUnavailableError, iter_posts
+
+    log = log or console.print
+    total_new = 0
+    total_dup = 0
+
+    for i, source in enumerate(sources):
+        username = source["username"]
+        title = source.get("title", username)
+        if progress:
+            progress(i, len(sources))
+        log(f"\n📡 {title} (@{username}) [веб]")
+
+        count = 0
+        duplicates = 0
+        try:
+            for post in iter_posts(username, limit=limit,
+                                   date_from=date_from, date_to=date_to,
+                                   log=log):
+                if not force and is_duplicate(index, username, post.id):
+                    duplicates += 1
+                    continue
+
+                if not post.text:
+                    continue
+
+                text_lower = post.text.lower()
+                if not any(w in text_lower for w in TRIGGER_WORDS):
+                    continue
+
+                coords = extract_coordinates(post.text)
+                entities = extract_entities(post.text)
+                category = classify_event(post.text)
+                save_event(username, title, post, entities, coords, category)
+                add_to_index(index, username, post.id)
+                count += 1
+                log(f"  ✓ [{category}] {post.date:%d.%m %H:%M} — {post.text[:60]}...")
+        except ChannelUnavailableError as e:
+            log(f"  ❌ {e}")
+            continue
+
+        log(f"  Новых: {count}  Дубликатов пропущено: {duplicates}")
+        total_new += count
+        total_dup += duplicates
+        time.sleep(1)   # вежливая пауза между каналами
+
+    return total_new, total_dup
 
 
 # ---------- Основная логика ----------
@@ -280,9 +346,20 @@ async def main():
     index = load_index()
     console.print(f"[dim]📋 В индексе: {len(index)} постов[/]")
 
+    if args.mode == "web":
+        console.print("[bold blue]🌐 Режим: веб-превью t.me/s (без API-ключей)[/]")
+        total_new, total_dup = run_web_parsing(
+            sources, date_from, date_to, args.limit, args.force, index,
+            log=lambda m: console.print(m))
+        save_index(index)
+        console.rule()
+        console.print(f"[bold green]🏁 Готово! Новых: {total_new}  Дубликатов: {total_dup}[/]")
+        return
+
     # Получаем credentials из конфига
     api_id, api_hash, phone = get_api_credentials()
 
+    from telethon import TelegramClient
     client = TelegramClient("session_name", api_id, api_hash)
     await client.start(phone=phone)
 

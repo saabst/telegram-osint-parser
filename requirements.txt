@@ -8,3 +8,4 @@ xlsxwriter==3.1.9
 plyer==2.1.0
 tkcalendar==1.6.1
 packaging
+requests==2.32.3
