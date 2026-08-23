@@ -43,3 +43,5 @@ build/
 .DS_Store
 Thumbs.db
 desktop.ini
+# реальные источники мониторинга — не публикуются
+sources.local.json

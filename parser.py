@@ -18,7 +18,19 @@ console = Console()
 
 # ============ КОНФИГУРАЦИЯ ============
 CONFIG_FILE = "config.json"
-SOURCES_FILE = "sources.json"
+
+
+def sources_file() -> str:
+    """Активный файл источников.
+
+    sources.local.json (игнорируется git) имеет приоритет — там живут
+    реальные каналы мониторинга. sources.json в репозитории остаётся
+    публичным примером с демо-данными.
+    """
+    return "sources.local.json" if Path("sources.local.json").exists() else "sources.json"
+
+
+SOURCES_FILE = sources_file()
 OUTPUT_DIR = "events"
 INDEX_FILE = "events_index.json"
 

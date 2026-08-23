@@ -20,7 +20,7 @@ from parser import (
     extract_coordinates, extract_entities, classify_event, save_event,
     resolve_coordinates,
     load_config, save_config, run_web_parsing,
-    TRIGGER_WORDS
+    sources_file, TRIGGER_WORDS
 )
 
 # Настройки темы
@@ -240,7 +240,8 @@ class ParserGUI(ctk.CTk):
         self.save_sources()
     
     def save_sources(self):
-        with open("sources.json", "w", encoding="utf-8") as f:
+        # реальные источники пишутся в локальный файл (не коммитится в git)
+        with open(sources_file(), "w", encoding="utf-8") as f:
             json.dump({"sources": self.sources}, f, ensure_ascii=False, indent=2)
     
     def add_source(self):

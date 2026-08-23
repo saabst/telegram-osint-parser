@@ -252,7 +252,8 @@ telegram-osint-parser/
 ├── export.py                # экспорт в CSV и Excel
 │
 ├── config.json              # API credentials (создаётся через GUI)
-├── sources.json             # список каналов с группами и статусами
+├── sources.json             # демо-пример источников (публичный)
+├── sources.local.json       # реальные каналы (в .gitignore, приоритетнее)
 ├── events_index.json        # индекс (channel, msg_id) для дедупликации
 ├── session_name.session     # сессия Telethon, привязана к аккаунту
 │
