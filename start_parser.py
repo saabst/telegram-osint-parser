@@ -18,6 +18,7 @@ import dateparser
 from parser import (
     load_sources, save_index, load_index, is_duplicate, add_to_index,
     extract_coordinates, extract_entities, classify_event, save_event,
+    resolve_coordinates,
     load_config, save_config, run_web_parsing,
     TRIGGER_WORDS
 )
@@ -613,7 +614,8 @@ class ParserGUI(ctk.CTk):
                         coords = extract_coordinates(message.text)
                         entities = extract_entities(message.text)
                         category = classify_event(message.text)
-                        save_event(username, title, message, entities, coords, category)
+                        coords, approx = resolve_coordinates(coords, entities)
+                        save_event(username, title, message, entities, coords, category, approx)
                         add_to_index(index, username, message.id)
                         count += 1
                         

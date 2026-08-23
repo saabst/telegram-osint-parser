@@ -33,7 +33,44 @@ COUNTRIES = ["украина", "россия", "беларусь", "польша
 
 CITIES = ["киев", "харьков", "одесса", "львов", "днепр", "запорожье", "херсон",
           "москва", "санкт-петербург", "белгород", "курск", "воронеж", "ростов",
-          "минск", "гомель", "варшава", "кишинёв"]
+          "минск", "гомель", "варшава", "кишинёв",
+          "донецк", "луганск", "мариуполь", "симферополь", "севастополь",
+          "николаев", "полтава", "сумы", "чернигов",
+          "донбасс", "крым"]
+
+# Приблизительные центры городов и регионов. Используются, когда в посте
+# нет явных координат, но упомянут населённый пункт — событие привязывается
+# к центру и помечается флагом approximate.
+REGION_CENTERS = {
+    "киев": (50.4501, 30.5234),
+    "харьков": (49.9935, 36.2304),
+    "одесса": (46.4775, 30.7326),
+    "львов": (49.8397, 24.0297),
+    "днепр": (48.4647, 35.0462),
+    "запорожье": (47.8388, 35.1396),
+    "херсон": (46.6354, 32.6114),
+    "москва": (55.7558, 37.6173),
+    "санкт-петербург": (59.9311, 30.3609),
+    "белгород": (50.5977, 36.5859),
+    "курск": (51.7373, 36.1874),
+    "воронеж": (51.6608, 39.2003),
+    "ростов": (47.2357, 39.5444),
+    "минск": (53.9006, 27.5590),
+    "гомель": (52.4345, 30.9754),
+    "варшава": (52.2297, 21.0122),
+    "кишинёв": (47.0105, 28.8638),
+    "донецк": (48.0159, 37.8028),
+    "луганск": (48.5740, 39.3078),
+    "мариуполь": (47.0971, 37.5435),
+    "симферополь": (44.9521, 34.1024),
+    "севастополь": (44.6166, 33.5254),
+    "николаев": (46.9750, 31.9946),
+    "полтава": (49.5937, 34.5435),
+    "сумы": (50.9077, 34.7981),
+    "чернигов": (51.4982, 31.2893),
+    "донбасс": (48.3000, 38.0000),
+    "крым": (45.2000, 34.4000),
+}
 # ====================================
 
 
@@ -138,10 +175,20 @@ def filter_sources(sources: list[dict], args) -> list[dict]:
 # ---------- Извлечение сущностей ----------
 def extract_coordinates(text: str) -> list[dict]:
     coords = []
-    for m in re.finditer(r"(-?\d{1,3}\.\d{3,8})[,\s]+(-?\d{1,3}\.\d{3,8})", text):
-        lat, lon = float(m.group(1)), float(m.group(2))
+    # Десятичные градусы: точка или запятая в дробной части (35,18066 — русский
+    # формат), точность после разделителя от 3 до 15 знаков (встречается и
+    # 47.80499465299742 с «лишней» точностью от карт)
+    def _num(s: str) -> float:
+        return float(s.replace(",", "."))
+
+    for m in re.finditer(
+            r"(-?\d{1,3}[.,]\d{3,15})\s*[,;|]?\s*(-?\d{1,3}[.,]\d{3,15})", text):
+        try:
+            lat, lon = _num(m.group(1)), _num(m.group(2))
+        except ValueError:
+            continue
         if -90 <= lat <= 90 and -180 <= lon <= 180:
-            coords.append({"lat": lat, "lon": lon, "format": "decimal"})
+            coords.append({"lat": round(lat, 6), "lon": round(lon, 6), "format": "decimal"})
     for m in re.finditer(
         r"(\d{1,3})°(\d{1,2})[′'](\d{1,2})[″\"]\s*с\.?\s*ш\.?\s*,?\s*(\d{1,3})°(\d{1,2})[′'](\d{1,2})[″\"]\s*в\.?\s*д\.?",
         text, re.IGNORECASE
@@ -172,7 +219,20 @@ def classify_event(text: str) -> str:
     return "прочее"
 
 
-def save_event(channel_username: str, channel_title: str, message, entities: dict, coords: list, category: str):
+def resolve_coordinates(coords: list, entities: dict) -> tuple[list, bool]:
+    """Если явных координат в посте нет, но упомянут известный город/регион —
+    подставляет приблизительный центр. Возвращает (координаты, approximate)."""
+    if coords:
+        return coords, False
+    loc = entities.get("location")
+    if loc and loc in REGION_CENTERS:
+        lat, lon = REGION_CENTERS[loc]
+        return [{"lat": lat, "lon": lon, "format": "approx"}], True
+    return [], False
+
+
+def save_event(channel_username: str, channel_title: str, message, entities: dict,
+               coords: list, category: str, approximate: bool = False):
     folder = os.path.join(OUTPUT_DIR, category)
     os.makedirs(folder, exist_ok=True)
     filename = f"{message.date.strftime('%Y-%m-%d_%H-%M')}_msg{message.id}.json"
@@ -190,7 +250,7 @@ def save_event(channel_username: str, channel_title: str, message, entities: dic
         "full_text": message.text or "",
         "link": link,
         "geo": {"coordinates": coords, "location_name": entities["location"],
-                "country": entities["country"]},
+                "country": entities["country"], "approximate": approximate},
         "military": {"missile_type": entities["missile_type"]},
     }
     with open(os.path.join(folder, filename), "w", encoding="utf-8") as f:
@@ -257,7 +317,8 @@ def run_web_parsing(sources: list[dict], date_from, date_to, limit: int,
                 coords = extract_coordinates(post.text)
                 entities = extract_entities(post.text)
                 category = classify_event(post.text)
-                save_event(username, title, post, entities, coords, category)
+                coords, approx = resolve_coordinates(coords, entities)
+                save_event(username, title, post, entities, coords, category, approx)
                 add_to_index(index, username, post.id)
                 count += 1
                 log(f"  ✓ [{category}] {post.date:%d.%m %H:%M} — {post.text[:60]}...")
@@ -310,7 +371,8 @@ async def parse_channel(client, source: dict, date_from, date_to, limit: int, in
         coords = extract_coordinates(message.text)
         entities = extract_entities(message.text)
         category = classify_event(message.text)
-        save_event(username, title, message, entities, coords, category)
+        coords, approx = resolve_coordinates(coords, entities)
+        save_event(username, title, message, entities, coords, category, approx)
         add_to_index(index, username, message.id)
         count += 1
         console.print(f"  [green]✓[/] [{category}] {message.date:%d.%m %H:%M} — {message.text[:60]}...")

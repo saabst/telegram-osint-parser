@@ -62,6 +62,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .cat-дроны { background: #4a3a1e; color: #ffcc66; }
   .cat-прочее { background: #2a3138; color: #aaa; }
   #map { width: 55%; }
+  /* Полноэкранный режим карты */
+  #map:fullscreen { width: 100vw; height: 100vh; }
+  .fullscreen-btn { font-size: 17px; }
+  /* Тёмная тема для контролов Leaflet */
+  .leaflet-bar a, .leaflet-control-layers,
+  .leaflet-control-attribution { background: #1a1f26 !important; color: #e6e6e6 !important;
+                                  border-color: #2a3138 !important; }
+  .leaflet-control-attribution a { color: #4da3ff !important; }
+  .leaflet-control-layers-expanded { padding: 8px 12px; }
+  .leaflet-bar a:hover { background: #232a33 !important; }
   #details { position: fixed; right: 0; top: 0; bottom: 0; width: 420px;
              background: #1a1f26; border-left: 1px solid #2a3138;
              transform: translateX(100%); transition: transform 0.2s;
@@ -109,6 +119,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
         <th data-sort="date">Дата</th>
         <th data-sort="category">Категория</th>
         <th data-sort="location">Локация</th>
+        <th>Координаты</th>
         <th data-sort="missile">Тип</th>
         <th>Канал</th>
       </tr></thead>
@@ -155,6 +166,24 @@ function init() {
   for (const [name, make] of Object.entries(BASE_LAYERS)) layers[name] = make();
   layers["Тёмная"].addTo(map);
   L.control.layers(layers).addTo(map);
+
+  // Кнопка полного экрана
+  const FsControl = L.Control.extend({
+    options: {position: 'topleft'},
+    onAdd() {
+      const div = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+      const a = L.DomUtil.create('a', 'fullscreen-btn', div);
+      a.href = '#'; a.innerHTML = '⛶'; a.title = 'Карта на весь экран';
+      L.DomEvent.on(a, 'click', (e) => {
+        L.DomEvent.stop(e);
+        if (!document.fullscreenElement) document.getElementById('map').requestFullscreen();
+        else document.exitFullscreen();
+      });
+      return div;
+    }
+  });
+  new FsControl().addTo(map);
+  document.addEventListener('fullscreenchange', () => setTimeout(() => map.invalidateSize(), 120));
 
   // Заполняем фильтры
   const cats = [...new Set(DATA.map(e => e.category).filter(Boolean))];
@@ -242,7 +271,7 @@ function render() {
   markers = [];
 
   if (events.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="5" class="empty">Ничего не найдено</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">Ничего не найдено</td></tr>';
     return;
   }
 
@@ -253,10 +282,14 @@ function render() {
     const dateStr = d.toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'});
     const loc = e.geo?.location_name || '—';
     const mis = e.military?.missile_type || '—';
+    const c0 = e.geo?.coordinates?.[0];
+    const approx = !!e.geo?.approximate;
+    const coordStr = c0 ? (approx ? '≈ ' : '') + c0.lat.toFixed(4) + ', ' + c0.lon.toFixed(4) : '—';
     tr.innerHTML = `
       <td>${dateStr}</td>
       <td><span class="cat cat-${e.category||'прочее'}">${e.category||'прочее'}</span></td>
       <td>${loc}</td>
+      <td style="font-family:monospace;font-size:12px">${coordStr}</td>
       <td>${mis}</td>
       <td style="color:#8a94a0;font-size:12px">${e.channel||''}</td>
     `;
@@ -270,11 +303,13 @@ function render() {
       const color = CAT_COLORS[e.category] || '#888';
       const marker = L.circleMarker([c.lat, c.lon], {
         radius: 7, fillColor: color, color: '#fff', weight: 1,
-        opacity: 1, fillOpacity: 0.8
+        opacity: 1,
+        fillOpacity: approx ? 0.4 : 0.8,
+        dashArray: approx ? '3 3' : null   // приблизительная локация — пунктир
       }).addTo(map);
       marker.bindPopup(`<div class="marker-popup">
         <b>${e.category||'событие'}</b><br>
-        ${e.geo?.location_name||''}<br>
+        ${e.geo?.location_name||''} ${approx ? '<small>(≈ приблизительно)</small>' : ''}<br>
         ${e.military?.missile_type||''}<br>
         <small>${dateStr}</small>
       </div>`);
@@ -294,9 +329,13 @@ function showDetails(e, rowEl) {
   if (rowEl) rowEl.classList.add('active');
 
   const coords = e.geo?.coordinates?.[0];
-  const coordStr = coords ? `${coords.lat.toFixed(5)}, ${coords.lon.toFixed(5)}` : '—';
+  const approx = !!e.geo?.approximate;
+  const coordStr = coords ? (approx ? '≈ ' : '') + `${coords.lat.toFixed(5)}, ${coords.lon.toFixed(5)}` : '—';
   const mapsLink = coords ?
     `<a href="https://www.google.com/maps?q=${coords.lat},${coords.lon}" target="_blank" style="color:#4da3ff">Открыть в Google Maps ↗</a>` : '';
+  const accuracy = approx
+    ? '<div class="field"><div class="field-label">Точность</div><div class="field-value" style="color:#ffcc66">≈ приблизительная — центр региона, точных координат в посте нет</div></div>'
+    : '';
 
   const html = `
     <h2>${e.category||'Событие'} · ${e.geo?.location_name||'—'}</h2>
@@ -312,6 +351,7 @@ function showDetails(e, rowEl) {
       <div class="field-value">${e.military?.missile_type||'—'}</div></div>
     <div class="field"><div class="field-label">Координаты</div>
       <div class="field-value">${coordStr}<br>${mapsLink}</div></div>
+    ${accuracy}
     ${e.link ? `<div class="field"><div class="field-label">Оригинал</div>
       <div class="field-value"><a href="${e.link}" target="_blank" style="color:#4da3ff">${e.link}</a></div></div>` : ''}
     <div class="field"><div class="field-label">Полный текст поста</div>
