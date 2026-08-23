@@ -65,7 +65,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #details { position: fixed; right: 0; top: 0; bottom: 0; width: 420px;
              background: #1a1f26; border-left: 1px solid #2a3138;
              transform: translateX(100%); transition: transform 0.2s;
-             overflow-y: auto; padding: 20px; z-index: 100; }
+             overflow-y: auto; padding: 20px;
+             z-index: 1100; /* выше всех слоёв Leaflet (панели до 700, контролы до 1000) */ }
   #details.open { transform: translateX(0); }
   #details h2 { font-size: 15px; color: #4da3ff; margin-bottom: 12px; }
   #details .close { position: absolute; top: 10px; right: 15px; cursor: pointer;
@@ -131,13 +132,29 @@ const CAT_COLORS = {
   "дроны": "#ffaa33", "прочее": "#888888"
 };
 
+// Базовые карты. По умолчанию — тёмная CARTO: работает и при открытии
+// файла двойным кликом (file://), когда сервер волонтёров OSM режет тайлы
+// 403-м за пустой Referer.
+const BASE_LAYERS = {
+  "Тёмная": () => L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    {maxZoom: 20, subdomains: 'abcd', attribution: '© OpenStreetMap contributors © CARTO'}),
+  "OSM": () => L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    {maxZoom: 18, attribution: '© OpenStreetMap contributors'}),
+  "Спутник": () => L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    {maxZoom: 17, attribution: 'Esri, Maxar, Earthstar Geographics'})
+};
+
+const DETAILS_WIDTH = 420;   // ширина панели деталей — карта смещается, чтобы маркер не ушёл под неё
+
 let map, markers = [], currentSort = "date_desc";
 
 function init() {
   map = L.map('map', { worldCopyJump: true }).setView([48.5, 35], 5);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '© OSM', maxZoom: 18
-  }).addTo(map);
+
+  const layers = {};
+  for (const [name, make] of Object.entries(BASE_LAYERS)) layers[name] = make();
+  layers["Тёмная"].addTo(map);
+  L.control.layers(layers).addTo(map);
 
   // Заполняем фильтры
   const cats = [...new Set(DATA.map(e => e.category).filter(Boolean))];
@@ -303,8 +320,14 @@ function showDetails(e, rowEl) {
   document.getElementById('details-content').innerHTML = html;
   document.getElementById('details').classList.add('open');
 
-  // Центрируем карту
-  if (coords) map.flyTo([coords.lat, coords.lon], 10, {duration: 0.5});
+  // Центрируем карту со смещением влево на полширины панели,
+  // чтобы маркер остался виден, а не спрятался под карточкой
+  if (coords) {
+    const zoom = 10;
+    const halfPanel = DETAILS_WIDTH / 2;
+    const pt = map.project([coords.lat, coords.lon], zoom).subtract([halfPanel, 0]);
+    map.flyTo(map.unproject(pt, zoom), zoom, {duration: 0.5});
+  }
 }
 
 function closeDetails() {
