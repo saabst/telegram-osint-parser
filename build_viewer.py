@@ -28,6 +28,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <title>Geo Events Viewer</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -135,6 +137,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 <script>
 const DATA = __DATA_PLACEHOLDER__;
 
@@ -157,7 +160,7 @@ const BASE_LAYERS = {
 
 const DETAILS_WIDTH = 420;   // ширина панели деталей — карта смещается, чтобы маркер не ушёл под неё
 
-let map, markers = [], currentSort = "date_desc";
+let map, cluster = null, currentSort = "date_desc";
 
 function init() {
   map = L.map('map', { worldCopyJump: true }).setView([48.5, 35], 5);
@@ -184,6 +187,14 @@ function init() {
   });
   new FsControl().addTo(map);
   document.addEventListener('fullscreenchange', () => setTimeout(() => map.invalidateSize(), 120));
+
+  // Кластеризация: при сотнях маркеров карта остаётся читаемой
+  cluster = L.markerClusterGroup({
+    showCoverageOnHover: false,
+    maxClusterRadius: 45,
+    spiderfyOnMaxZoom: true
+  });
+  map.addLayer(cluster);
 
   // Заполняем фильтры
   const cats = [...new Set(DATA.map(e => e.category).filter(Boolean))];
@@ -267,8 +278,7 @@ function render() {
   tbody.innerHTML = '';
 
   // Чистим маркеры
-  markers.forEach(m => map.removeLayer(m));
-  markers = [];
+  if (cluster) cluster.clearLayers();
 
   if (events.length === 0) {
     tbody.innerHTML = '<tr><td colspan="6" class="empty">Ничего не найдено</td></tr>';
@@ -318,8 +328,7 @@ function render() {
         const row = document.querySelector(`tr[data-id="${CSS.escape(tr.dataset.id)}"]`);
         if (row) row.scrollIntoView({behavior:'smooth', block:'center'});
       });
-      marker._eventData = e;
-      markers.push(marker);
+      cluster.addLayer(marker);
     }
   });
 }

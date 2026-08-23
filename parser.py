@@ -79,9 +79,13 @@ def load_config() -> dict:
     """Загружает конфигурацию из файла."""
     if not Path(CONFIG_FILE).exists():
         return {
+            "mode": "api",
             "api_id": None,
             "api_hash": None,
             "phone": None,
+            "tg_bot_token": None,
+            "tg_chat_id": None,
+            "schedule_hours": 0,
         }
     with open(CONFIG_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -255,6 +259,7 @@ def save_event(channel_username: str, channel_title: str, message, entities: dic
     }
     with open(os.path.join(folder, filename), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    return data
 
 
 # ---------- CLI ----------
@@ -278,11 +283,14 @@ def build_parser() -> argparse.ArgumentParser:
 # ---------- Веб-режим (t.me/s, без API-ключей) ----------
 def run_web_parsing(sources: list[dict], date_from, date_to, limit: int,
                     force: bool, index: set,
-                    log=None, progress=None) -> tuple[int, int]:
+                    log=None, progress=None,
+                    saved_events: list | None = None) -> tuple[int, int]:
     """Парсит каналы через веб-превью t.me/s. Возвращает (новых, дубликатов).
 
     Использует ту же обработку, что и API-режим: триггеры, извлечение
     сущностей, категории, дедупликацию и формат сохранения.
+    Если передан saved_events, туда складываются сохранённые события
+    (для уведомлений).
     """
     from web_fetch import ChannelUnavailableError, iter_posts
 
@@ -318,7 +326,9 @@ def run_web_parsing(sources: list[dict], date_from, date_to, limit: int,
                 entities = extract_entities(post.text)
                 category = classify_event(post.text)
                 coords, approx = resolve_coordinates(coords, entities)
-                save_event(username, title, post, entities, coords, category, approx)
+                saved = save_event(username, title, post, entities, coords, category, approx)
+                if saved_events is not None:
+                    saved_events.append(saved)
                 add_to_index(index, username, post.id)
                 count += 1
                 log(f"  ✓ [{category}] {post.date:%d.%m %H:%M} — {post.text[:60]}...")
@@ -335,7 +345,8 @@ def run_web_parsing(sources: list[dict], date_from, date_to, limit: int,
 
 
 # ---------- Основная логика ----------
-async def parse_channel(client, source: dict, date_from, date_to, limit: int, index: set, force: bool):
+async def parse_channel(client, source: dict, date_from, date_to, limit: int,
+                        index: set, force: bool, saved_events: list | None = None):
     username = source["username"]
     title = source.get("title", username)
     console.print(f"\n[bold cyan]📡 {title}[/] (@{username})")
@@ -372,7 +383,9 @@ async def parse_channel(client, source: dict, date_from, date_to, limit: int, in
         entities = extract_entities(message.text)
         category = classify_event(message.text)
         coords, approx = resolve_coordinates(coords, entities)
-        save_event(username, title, message, entities, coords, category, approx)
+        saved = save_event(username, title, message, entities, coords, category, approx)
+        if saved_events is not None:
+            saved_events.append(saved)
         add_to_index(index, username, message.id)
         count += 1
         console.print(f"  [green]✓[/] [{category}] {message.date:%d.%m %H:%M} — {message.text[:60]}...")
@@ -410,12 +423,17 @@ async def main():
 
     if args.mode == "web":
         console.print("[bold blue]🌐 Режим: веб-превью t.me/s (без API-ключей)[/]")
+        saved_events: list = []
         total_new, total_dup = run_web_parsing(
             sources, date_from, date_to, args.limit, args.force, index,
-            log=lambda m: console.print(m))
+            log=lambda m: console.print(m), saved_events=saved_events)
         save_index(index)
         console.rule()
         console.print(f"[bold green]🏁 Готово! Новых: {total_new}  Дубликатов: {total_dup}[/]")
+
+        if saved_events:
+            from notify import notify_new_events
+            notify_new_events(saved_events, log=lambda m: console.print(m))
         return
 
     # Получаем credentials из конфига
@@ -425,10 +443,13 @@ async def main():
     client = TelegramClient("session_name", api_id, api_hash)
     await client.start(phone=phone)
 
+    saved_events: list = []
     total_new = 0
     total_dup = 0
     for source in sources:
-        new, dup = await parse_channel(client, source, date_from, date_to, args.limit, index, args.force)
+        new, dup = await parse_channel(client, source, date_from, date_to,
+                                       args.limit, index, args.force,
+                                       saved_events=saved_events)
         total_new += new
         total_dup += dup
         await asyncio.sleep(1)
@@ -438,6 +459,10 @@ async def main():
     await client.disconnect()
     console.rule()
     console.print(f"[bold green]🏁 Готово! Новых: {total_new}  Дубликатов: {total_dup}[/]")
+
+    if saved_events:
+        from notify import notify_new_events
+        notify_new_events(saved_events, log=lambda m: console.print(m))
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ import asyncio
 import threading
 import subprocess
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import messagebox
 
@@ -43,9 +43,48 @@ class ParserGUI(ctk.CTk):
         self.sources = load_sources()
         self.config = load_config()
         self.is_running = False
+        self._sched_timer = None
         
         self.setup_ui()
         self.load_sources_to_ui()
+        self.arm_schedule()
+    
+    def _schedule_hours(self) -> int:
+        if not getattr(self, "sched_var", None) or not self.sched_var.get():
+            return 0
+        return {"1 ч": 1, "2 ч": 2, "3 ч": 3, "6 ч": 6,
+                "12 ч": 12, "24 ч": 24}.get(self.sched_menu.get(), 0)
+    
+    def on_schedule_change(self):
+        hours = self._schedule_hours()
+        self.config["schedule_hours"] = hours
+        save_config(self.config)
+        self.arm_schedule()
+    
+    def arm_schedule(self):
+        """Перезапускает таймер автопарсинга согласно настройке."""
+        if self._sched_timer:
+            self._sched_timer.cancel()
+            self._sched_timer = None
+        
+        hours = int(self.config.get("schedule_hours") or 0)
+        if hours > 0:
+            self._sched_timer = threading.Timer(hours * 3600, self._scheduled_tick)
+            self._sched_timer.daemon = True
+            self._sched_timer.start()
+            nxt = (datetime.now() + timedelta(hours=hours)).strftime("%H:%M")
+            self.sched_next.configure(text=f"далее ~{nxt}")
+        else:
+            self.sched_next.configure(text="")
+    
+    def _scheduled_tick(self):
+        if not self.is_running:
+            self.log("⏱ Автозапуск по расписанию")
+            try:
+                self.start_parsing()
+            except Exception as e:
+                self.log(f"❌ Ошибка автозапуска: {e}")
+        self.arm_schedule()
     
     def setup_ui(self):
         """Создаёт интерфейс."""
@@ -144,6 +183,26 @@ class ParserGUI(ctk.CTk):
         
         self.status_label = ctk.CTkLabel(control_frame, text="Готов к запуску")
         self.status_label.pack(side="left")
+        
+        # Расписание автопарсинга
+        sched_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
+        sched_frame.pack(side="right")
+        
+        self.sched_next = ctk.CTkLabel(sched_frame, text="", text_color="gray", width=90)
+        self.sched_next.pack(side="left")
+        
+        self.sched_menu = ctk.CTkOptionMenu(
+            sched_frame, values=["1 ч", "2 ч", "3 ч", "6 ч", "12 ч", "24 ч"],
+            width=75, command=lambda v: self.on_schedule_change())
+        _hours = int(self.config.get("schedule_hours") or 0)
+        self.sched_menu.set({1: "1 ч", 2: "2 ч", 3: "3 ч", 6: "6 ч",
+                             12: "12 ч", 24: "24 ч"}.get(_hours, "6 ч"))
+        self.sched_menu.pack(side="left", padx=(6, 0))
+        
+        self.sched_var = ctk.BooleanVar(value=_hours > 0)
+        ctk.CTkCheckBox(sched_frame, text="⏱ Автоповтор каждые",
+                        variable=self.sched_var,
+                        command=self.on_schedule_change).pack(side="left")
         
         # Лог
         ctk.CTkLabel(bottom_frame, text="📋 Лог работы", font=("", 12, "bold")).pack(anchor="w", pady=(5, 2))
@@ -327,7 +386,7 @@ class ParserGUI(ctk.CTk):
         """Открывает диалог настроек парсинга (режим + API credentials)."""
         dialog = ctk.CTkToplevel(self)
         dialog.title("Настройки парсинга")
-        dialog.geometry("560x560")
+        dialog.geometry("560x740")
         dialog.transient(self)
         dialog.update()
         dialog.grab_set()
@@ -367,6 +426,44 @@ class ParserGUI(ctk.CTk):
             phone_entry.insert(0, self.config["phone"])
         
         entries = (api_id_entry, api_hash_entry, phone_entry)
+        
+        # ===== Уведомления в Telegram =====
+        ctk.CTkLabel(dialog, text="📬 Уведомления о новых событиях",
+                     font=("", 14, "bold")).pack(pady=(20, 5))
+        ctk.CTkLabel(dialog, text="После каждого парсинга бот пришлёт дайджест новых событий.\n"
+                                  "Создай бота у @BotFather и вставь сюда его токен.",
+                     text_color="gray", justify="left").pack(anchor="w", padx=30)
+        
+        ctk.CTkLabel(dialog, text="Токен бота:").pack(anchor="w", padx=30, pady=(8, 2))
+        bot_token_entry = ctk.CTkEntry(dialog, width=460, show="•")
+        bot_token_entry.pack(padx=30)
+        if self.config.get("tg_bot_token"):
+            bot_token_entry.insert(0, self.config["tg_bot_token"])
+        
+        ctk.CTkLabel(dialog, text="Chat ID (куда присылать):").pack(anchor="w", padx=30, pady=(10, 2))
+        chat_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        chat_row.pack(fill="x", padx=30)
+        chat_entry = ctk.CTkEntry(chat_row, width=330)
+        chat_entry.pack(side="left")
+        if self.config.get("tg_chat_id"):
+            chat_entry.insert(0, str(self.config["tg_chat_id"]))
+        
+        def detect_chat():
+            token = bot_token_entry.get().strip()
+            if not token:
+                messagebox.showerror("Ошибка", "Сначала вставь токен бота", parent=dialog)
+                return
+            from notify import detect_chat_id
+            try:
+                cid = detect_chat_id(token)
+            except ValueError as e:
+                messagebox.showinfo("Не получилось", str(e), parent=dialog)
+                return
+            chat_entry.delete(0, "end")
+            chat_entry.insert(0, str(cid))
+        
+        ctk.CTkButton(chat_row, text="Определить", width=120,
+                      command=detect_chat).pack(side="left", padx=(8, 0))
         
         def on_mode_change(label):
             mode = MODE_VALUES[label]
@@ -408,6 +505,9 @@ class ParserGUI(ctk.CTk):
                 "api_id": api_id or None,
                 "api_hash": api_hash or None,
                 "phone": phone or None,
+                "tg_bot_token": bot_token_entry.get().strip() or None,
+                "tg_chat_id": chat_entry.get().strip() or None,
+                "schedule_hours": self.config.get("schedule_hours", 0),
             }
             save_config(self.config)
             
@@ -565,6 +665,7 @@ class ParserGUI(ctk.CTk):
             index = load_index()
             self.log(f"📋 В индексе: {len(index)} постов\n")
             
+            saved_events: list = []
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
@@ -615,7 +716,8 @@ class ParserGUI(ctk.CTk):
                         entities = extract_entities(message.text)
                         category = classify_event(message.text)
                         coords, approx = resolve_coordinates(coords, entities)
-                        save_event(username, title, message, entities, coords, category, approx)
+                        saved = save_event(username, title, message, entities, coords, category, approx)
+                        saved_events.append(saved)
                         add_to_index(index, username, message.id)
                         count += 1
                         
@@ -638,6 +740,10 @@ class ParserGUI(ctk.CTk):
             self.status_label.configure(text="Готово")
             self.progress.set(1.0)
             
+            if saved_events:
+                from notify import notify_new_events
+                notify_new_events(saved_events, log=self.log)
+            
             messagebox.showinfo("Готово", f"Парсинг завершён!\nНовых: {total_new}\nДубликатов: {total_dup}")
         
         except Exception as e:
@@ -648,6 +754,7 @@ class ParserGUI(ctk.CTk):
         finally:
             self.is_running = False
             self.start_btn.configure(state="normal", text="🚀 Запустить парсинг")
+            self.arm_schedule()   # перезапускаем таймер на следующий цикл
 
     def run_web_parser(self, sources: list[dict], date_from, date_to, force: bool):
         """Воркер веб-режима: парсинг через t.me/s без API-ключей."""
@@ -668,15 +775,20 @@ class ParserGUI(ctk.CTk):
             def progress_cb(i, total):
                 self.progress.set((i + 1) / total)
             
+            saved_events: list = []
             total_new, total_dup = run_web_parsing(
                 sources, date_from, date_to, 500, force, index,
-                log=self.log, progress=progress_cb)
+                log=self.log, progress=progress_cb, saved_events=saved_events)
             
             save_index(index)
             
             self.log(f"\n🏁 Готово! Новых: {total_new}  Дубликатов: {total_dup}")
             self.status_label.configure(text="Готово")
             self.progress.set(1.0)
+            
+            if saved_events:
+                from notify import notify_new_events
+                notify_new_events(saved_events, log=self.log)
             
             messagebox.showinfo("Готово", f"Парсинг завершён!\nНовых: {total_new}\nДубликатов: {total_dup}")
         
@@ -688,6 +800,7 @@ class ParserGUI(ctk.CTk):
         finally:
             self.is_running = False
             self.start_btn.configure(state="normal", text="🚀 Запустить парсинг")
+            self.arm_schedule()   # перезапускаем таймер на следующий цикл
     
     
 if __name__ == "__main__":
